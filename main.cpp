@@ -7,8 +7,9 @@
 #include "core/definitions.hpp"
 #include "core/statistics.hpp"
 #include "core/lbm.hpp"
+#include "core/output.hpp"
 
-#include "problems/homogeneousTurbulence.hpp"
+#include "problems/shearLayer.hpp"
 
 // void reportDevices()
 // {
@@ -34,22 +35,14 @@
 //     }
 // }
 
-constexpr int NX {256};
-constexpr int NY {256};
-constexpr int NZ {256};
-
-constexpr dfloat TAU {0.51637};
-constexpr dfloat OMEGA_EQ {1 / TAU};
-constexpr dfloat OMEGA_NEQ {1 - OMEGA_EQ};
+const dfloat OMEGA_EQ {1 / TAU};
+const dfloat OMEGA_NEQ {1 - OMEGA_EQ};
 
 
 static_assert(NX % BLOCK_SIZE_X == 0);
 static_assert(NY % BLOCK_SIZE_Y == 0);
 static_assert(NZ % BLOCK_SIZE_Z == 0);
 static_assert(BLOCK_VOL <= 1024);
-
-
-constexpr int N_STEPS {389254};
 
 
 int main()
@@ -74,17 +67,12 @@ int main()
     cuda_CHECK(cudaMalloc(&depsPartial, RED_BLOCKS * sizeof(double)));
 
 
-    /// LOAD INITIAL MOMENTS FROM VTK FILE
-    loadInitialConditions(momentsA, grid, block, NX, NY, NZ, TAU);    
-    // ================================================
-    
-
-    //setInitialConditions<<<grid, block>>>(momentsA, NX, NY, NZ, TAU);
+    initialize(momentsA, grid, block);
 
     cuda_CHECK(cudaGetLastError());
     cuda_CHECK(cudaDeviceSynchronize());
 
-    std::ofstream file("statistics_d3q27.dat");
+    std::ofstream file("statistics_lbm.dat");
     file << "#t\tk\teps\n";
     const auto t0 = std::chrono::steady_clock::now();
 
@@ -99,11 +87,16 @@ int main()
     file << std::scientific << std::setprecision(10) << 0 << '\t' << k / numberOfNodes << '\t' << eps / numberOfNodes << '\n';
     file.flush();
 
+    int iout = 0;
+    double nextOut = DT_OUT;
+    output(momentsA, iout++, 0);
+
     for (int t = 1; t <= N_STEPS+1; ++t)
     {
         kernel<<<grid, block>>>(momentsA, momentsB, NX, NY, NZ, OMEGA_EQ, OMEGA_NEQ);
         cuda_CHECK(cudaGetLastError());
         std::swap(momentsA, momentsB);
+        boundary(momentsA);
 
         if (t % 500 == 0)
         {
@@ -117,26 +110,37 @@ int main()
             file.flush();
         }
 
+        if (t == std::lround(nextOut))
+        {
+            output(momentsA, iout++, t);
+            nextOut += DT_OUT;
+        }
+
         if (t % reportInterval == 0 && t > 0)
         {
             cuda_CHECK(cudaDeviceSynchronize());
+            
             const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             const double eta = elapsed * (N_STEPS - t) / t;
             const int h_el = static_cast<int>(elapsed) / 3600;
             const int m_el = (static_cast<int>(elapsed) % 3600) / 60;
             const int h_eta = static_cast<int>(eta) / 3600;
             const int m_eta = (static_cast<int>(eta) % 3600) / 60;
-            std::cout << "Step: " << t << '\t' << 100 * t / N_STEPS << "%"
-                      << "\tElapsed: " << h_el << "h" << m_el << "min" << "\tETA: "
-                      << std::setw(2) << h_eta << "h"
-                      << std::setw(2) << m_eta << "min" << std::setfill(' ') << '\n';
-        }
+            std::cout << "Step: " << t << '\t'
+                    << std::fixed << std::setprecision(1) << 100.0 * t / N_STEPS << "%"
+                    << "\tElapsed: " << h_el << "h"
+                    << std::setfill('0') << std::setw(2) << m_el << "min"
+                    << "\tETA: " << h_eta << "h"
+                    << std::setw(2) << m_eta << "min"
+                    << std::setfill(' ') << std::defaultfloat
+                    << "   \r" << std::flush;        
+            }
     }
 
     cuda_CHECK(cudaDeviceSynchronize());
     const auto t1 = std::chrono::steady_clock::now();
     const double sec = std::chrono::duration<double>(t1 - t0).count();
-    std::cout << "MLUPS: " << static_cast<double>(numberOfNodes) * N_STEPS / (sec * 1.0e6) << '\n';
+    std::cout << "\nMLUPS: " << std::fixed << std::setprecision(1) << static_cast<double>(numberOfNodes) * N_STEPS / (sec * 1.0e6) << '\n';
 
     cuda_CHECK(cudaFree(momentsA));
     cuda_CHECK(cudaFree(momentsB));
