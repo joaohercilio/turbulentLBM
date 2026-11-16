@@ -7,7 +7,8 @@
    Modo (0,1):               omega_x gaussiano (wG), Gamma_x / Gamma_z = 0.025 (eq. 12)
    Paredes de deslizamento livre em j = 1/2 e j = NY - 3/2 (j = 0 e NY - 1 sao linhas fantasma).
    Grava initial.vtkhdf (ImageData) so com drho, u, v, w e S_ij em VTKHDF/PointData, shape [NZ, NY, NX]
-   (x varia mais rapido, como as saidas), e os parametros do caso em initial.txt ("nome valor" por linha).
+   (x varia mais rapido, como as saidas). Os parametros (U, Re, NX, NY, NZ) ficam no codigo, iguais aos de
+   problems/shearLayer.hpp e ML/spectral.py.
    Uso: python initial.py
 """
 
@@ -73,9 +74,5 @@ with h5py.File("initial.vtkhdf", "w") as out:
     point = g.create_group("PointData")
     for name, q in fields.items():
         point.create_dataset(name, data=np.ascontiguousarray(np.asarray(q, dtype=np.float32).transpose(2, 1, 0)))
-
-with open("initial.txt", "w") as out:
-    for name, val in dict(NX=NX, NY=NY, NZ=NZ, U=U, Re=RE, delta_w=DW, tau=0.5 + 3*nu).items():
-        out.write(f"{name} {val!r}\n")
 
 print(f"delta_w = {DW:.3f}, tau = {0.5 + 3*nu:.5f}, omega_i = {kx*c[k].imag:.4f} U/delta_w")

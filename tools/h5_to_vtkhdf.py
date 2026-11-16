@@ -2,10 +2,10 @@
 
    Antigo: datasets drho, ux, uy, uz, sxx, sxy, sxz, syy, syz, szz na raiz, indice [x, y, z].
    Novo:   arquivo.vtkhdf so com os 10 campos em VTKHDF/PointData/<nome>, shape [z, y, x] (x varia
-           mais rapido); os atributos da raiz vao para arquivo.txt, "nome valor" por linha.
+           mais rapido); os atributos da raiz (parametros) nao sao copiados.
            Spacing = 2 pi/N no HIT (atributo N), 1 caso contrario.
    Um campo por vez na memoria. O .h5 original nao e apagado.
-   Uso: python tools/h5_to_vtkhdf.py arquivo.h5 [...]   (grava arquivo.vtkhdf e arquivo.txt ao lado)
+   Uso: python tools/h5_to_vtkhdf.py arquivo.h5 [...]   (grava arquivo.vtkhdf ao lado)
 """
 
 import os
@@ -20,10 +20,6 @@ for src in sys.argv[1:]:
     dst = base + ".vtkhdf"
     with h5py.File(src, "r") as fin, h5py.File(dst + ".part", "w") as fout:
         NX, NY, NZ = fin["ux"].shape
-        with open(base + ".txt", "w") as g:
-            for key, val in fin.attrs.items():
-                val = val.decode() if isinstance(val, bytes) else val.item() if hasattr(val, "item") else val
-                g.write(f"{key} {val!r}\n" if isinstance(val, float) else f"{key} {val}\n")
         g = fout.create_group("VTKHDF")
         g.attrs["Version"] = np.array([1, 0], np.int32)
         g.attrs.create("Type", np.bytes_("ImageData"))
@@ -35,4 +31,4 @@ for src in sys.argv[1:]:
         for name in NAMES:
             point.create_dataset(name, data=np.ascontiguousarray(fin[name][:].transpose(2, 1, 0)))
     os.replace(dst + ".part", dst)
-    print(f"{src} -> {dst} + {base}.txt", flush=True)
+    print(f"{src} -> {dst}", flush=True)

@@ -1,12 +1,12 @@
 """Solucao de referencia pseudo-espectral do caso de problems/shearLayer.hpp, na GPU (CuPy).
 
-   Le os mesmos initial.vtkhdf (PointData com shape [NZ, NY, NX]) e initial.txt do LBM. Deslizamento livre nas paredes equivale a espelhar o dominio em y
+   Le o mesmo initial.vtkhdf (PointData com shape [NZ, NY, NX]) do LBM; parametros iguais aos de ML/initial.py. Deslizamento livre nas paredes equivale a espelhar o dominio em y
    (u, w pares e v impar): as linhas de fluido j = 1..NY-2 e a sua imagem formam um dominio periodico
    de altura 2(NY - 2), em que os pontos coincidem com os nos do LBM. Unidades de rede (dx = 1).
    Mesma integracao do HIT: RK3 de baixo armazenamento de Williamson, forma rotacional, regra dos 2/3,
    dt a cada 5 passos. Grava fields_XXXX.vtkhdf a cada delta_w/U, no mesmo formato e na mesma malha
    (incluindo as linhas fantasma) do LBM.
-   Uso, na pasta com initial.vtkhdf e initial.txt: python spectral.py <gpu>
+   Uso, na pasta com initial.vtkhdf: python spectral.py <gpu>
 """
 
 import sys
@@ -18,9 +18,9 @@ cp.cuda.Device(int(sys.argv[1])).use()
 
 t_end, cfl = 20, 0.5
 
-P = dict(line.split()[:2] for line in open("initial.txt") if line.split() and not line.startswith("#"))
-NX, NY, NZ = (int(P[k]) for k in ("NX", "NY", "NZ"))
-U, DW, RE = (float(P[k]) for k in ("U", "delta_w", "Re"))
+NX, NY, NZ = 256, 768, 154
+U, RE = 0.05, 500
+DW = NX/(1.16*2*np.pi)
 nu = U*DW/RE
 T_REF = DW/U
 
