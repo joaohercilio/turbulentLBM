@@ -1,0 +1,17 @@
+CompileFlags:
+  Add:
+    - -xcuda
+    - -std=c++20
+    - --cuda-host-only
+    - -nocudalib
+    - -I/usr/include/hdf5/serial
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - --generate-code*
+    - -arch=*
+    - -rdc=*
+    - --options-file
+Diagnostics:
+  Suppress:
+    - pp_file_not_found
+    - drv_cuda_bad_gpu_arch

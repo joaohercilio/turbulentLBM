@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <numbers>
 #include <type_traits>
 #include <hdf5.h>
 
@@ -59,9 +60,11 @@ constexpr int NZ {512};
 
 constexpr double U_SCALE {1};
 
-const dfloat TAU {static_cast<dfloat>(0.5 + U_SCALE * (readParameter("tau") - 0.5))};
+constexpr double TAU_0 {0.51};
+constexpr double TE_0 {60};
 
-const double TE {readParameter("te_lbm", "reference.txt") / U_SCALE};
+constexpr dfloat TAU {static_cast<dfloat>(0.5 + U_SCALE * (TAU_0 - 0.5))};
+constexpr double TE {TE_0 * NX / (2 * std::numbers::pi) / U_SCALE};
 const double DT_OUT {40 * TE / 199};
 const int N_STEPS {static_cast<int>(std::ceil(5 * TE))};
 

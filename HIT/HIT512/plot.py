@@ -2,8 +2,6 @@ import os
 import matplotlib as mpl
 mpl.use("pdf")
 import matplotlib.pyplot as plt
-import glob
-import h5py
 import numpy as np
 import tables as T
 
@@ -56,7 +54,7 @@ FIG = "results/figures"
 C = T.C
 E_MIN = 1e-14
 MARKS = lambda n: np.unique(np.geomspace(1, n, 25).astype(int)) - 1
-MA = np.mean([T.read_params(p)["Ma_rms"] for p in glob.glob("initial/initial_*.txt")])
+MA = np.sqrt(3)*np.mean([T.load(d)[0, C["urms"]] for d in T.spectral().values()])
 ma = lambda b: f"Ma = {b*MA:.3f}"
 
 
@@ -94,26 +92,21 @@ def series(name, ylabel, f, log=False, hline=None):
             ax.legend(loc="best")
             save(fig, f"{FIG}/{o}_Ma_x{b}/{name}.pdf")
 
-
-
-
-ax3 = lambda q: (lambda a: np.mean([a[:, C[q + d]] for d in T.AX], axis=0))
-an = lambda d: (lambda a: a[:, C["ratio" + d]] - ax3("ratio")(a))
-col = lambda c: (lambda a: a[:, C[c]])
+ax3, an, col = T.axes, T.aniso, T.col
 
 
 def band(cfg, f, rel=True):
-    """erro pareado LBM - espectral (relativo em % se rel): t, media e desvio padrao entre realizacoes"""
     root = cfg.split("lbm/")[0]
     P = []
     for r in T.realizations(cfg):
-        if T.post.ok(f"{root}spectral/realization{r}"):
-            a, s = T.load(f"{cfg}/realization{r}"), T.load(f"{root}spectral/realization{r}")
-            fs = f(s[[np.argmin(np.abs(s[:, 1] - t)) for t in a[:, 1]]])
+        if T.ok(f"{root}spectral/realization{r}"):
+            a = T.load(f"{cfg}/realization{r}")
+            fs = f(T.matched(a, T.load(f"{root}spectral/realization{r}")))
             P.append(100*(f(a) - fs)/fs if rel else f(a) - fs)
     n = min(len(p) for p in P)
     P = np.array([p[:n] for p in P])
     return a[:n, 1], P.mean(axis=0), P.std(axis=0, ddof=1)
+
 
 K0 = np.loadtxt("results/spectral/statistics_mean.dat", ndmin=2)[0]
 series("energy", r"$K/K_0$", lambda a: a[:, C["K"]]/K0[C["K"]], log=True)
@@ -236,7 +229,7 @@ for o in T.ORDERS:
         fig.suptitle(f"{o} order, {ma(b)}", y=1.12)
         save(fig, f"{FIG}/{o}_Ma_x{b}/energy_error.pdf")
 
-spec = {int(d.split("realization")[1]): d for d in __import__("glob").glob("spectral/realization*") if T.post.ok(d)}
+spec = T.spectral()
 fig, axs = plt.subplots(2, 2, figsize=(7.8, 4.8), sharex=True)
 for ax, q, sym in zip(axs.flat, ("eps", "F", "S", "ratio111"), (r"\varepsilon", "F", "S", r"I_r^{(111)}")):
     for l in T.LATTICES:
@@ -282,12 +275,12 @@ for q, label in (("aniso111", r"$\Delta(I_{r,111} - I_r)$"),
 for q, label in (("aniso111", r"I_r^{(111)} - I_r"), ("S", "S"), ("F", "F")):
     f = T.Q[q][1]
     rs = sorted(spec)
-    ps = [T.window(T.load(spec[r])[:, 1], f(T.load(spec[r])), (0, 2.5)) for r in rs]
+    ps = [T.mean_in(spec[r], f, (0, 2.5)) for r in rs]
     fig, axs = plt.subplots(1, 2, figsize=(7.8, 2.6))
     axs[0].plot(rs, ps, lw=0, marker="o", markersize=3.5, color=BLACK, label="Pseudo-spectral")
     for l in T.LATTICES:
         cfg = f"lbm/{l}_{T.ORDERS[0]}/Ma_x1"
-        lb = [T.window(T.load(f"{cfg}/realization{r}")[:, 1], f(T.load(f"{cfg}/realization{r}")), (0, 2.5)) for r in rs]
+        lb = [T.mean_in(f"{cfg}/realization{r}", f, (0, 2.5)) for r in rs]
         axs[0].plot(rs, lb, lw=0, label=l.upper(), **STYLE[l])
         axs[1].plot(rs, np.array(lb) - ps, lw=0, **STYLE[l])
     axs[1].axhline(0, color=BLACK, lw=0.5, ls=":", zorder=0)

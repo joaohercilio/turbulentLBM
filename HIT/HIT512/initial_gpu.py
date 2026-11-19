@@ -1,110 +1,154 @@
-"""Spin-up forcado na GPU continuando de uma IC colhida: initial.py com hitgpu.
-
-   Mesmo forcamento de Jimenez, Wray, Saffman & Rogallo (JFM 255, 1993), mesma lei
-   nu_f = eps_alvo/(2*Om_forcado) com eps_alvo = nu^3/eta_alvo^4, reajuste a cada
-   5 passos. A fonte ja esta nas unidades reescaladas (a congelado na 1a colheita):
-   pela simetria u -> a*u, nu -> a*nu, t -> t/a a dinamica forcada e a mesma, e
-   aqui a = 1. te0 = t(initial_0)/t_spinup, e colhe a cada t_space*te0.
-   perturbacao > 0 soma ruido solenoidal de amplitude relativa perturbacao (ramo
-   independente: o caos descorrelaciona em poucos te).
-   Uso: python initial_gpu.py <gpu> <fonte.vtkhdf> <primeiro_indice> <n_snap> [perturbacao]
-"""
-
 import os
 import sys
 import numpy as np
 import cupy as cp
 import h5py
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hitgpu as H
+N = 64
+TAU = 0.51
+ETA = 1.1
+TE  = 60
 
-cp.cuda.Device(int(sys.argv[1])).use()
-source, first, n_snap = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-perturbation = float(sys.argv[5]) if len(sys.argv) > 5 else 0.0
+K_FORCE = 2.5
 
-eta_delta_target = 1.1
-k_force  = 2.5
-t_spinup = 15
-t_space  = 10
-cfl      = 0.6
+T_SPINUP = 15
+T_SPACE = 10
+N_REAL = 8
 
-P = H.read_params(H.params_path(source))
-nu, t0, N = float(P["nu"]), float(P["t"]), int(P["N"])
-keep = {key: P[key] for key in ("seed", "k_force", "rescale")}
-with h5py.File(source, "r") as f:
-    H.init(N, nu)
-    u_hat = H.read_initial(f)
-u_hat *= H.dealias
-te0 = float(H.read_params("initial_0.txt")["t"])/t_spinup
+CFL = 0.6
 
-if perturbation > 0:
-    urms = H.diagnostics(u_hat)["urms"]
-    noise = cp.random.default_rng(first).standard_normal((3, N, N, N))*perturbation*urms
-    u_hat += cp.stack([H.fwd(noise[i]) for i in range(3)])
-    del noise
-    pk = (H.k[0]*u_hat[0] + H.k[1]*u_hat[1] + H.k[2]*u_hat[2])*H.inv_k2
+delta = 2*np.pi/N
+nu = (TAU - 0.5)/3*delta
+eps = nu**3/(ETA*delta)**4
+
+fwd = lambda a: cp.fft.rfftn(a, norm="forward")
+bwd = lambda a: cp.fft.irfftn(a, s=(N, N, N), norm="forward")
+
+kx = cp.fft.fftfreq(N, 1/N)
+kz = cp.fft.rfftfreq(N, 1/N)
+
+k = [kx[:, None, None], kx[None, :, None], kz[None, None, :]]
+k2 = k[0]**2 + k[1]**2 + k[2]**2
+
+inv_k2 = cp.where(k2 != 0, 1/cp.where(k2 != 0, k2, 1), 0)
+
+dealias = (cp.abs(k[0]) < N//3) & (cp.abs(k[1]) < N//3) & (cp.abs(k[2]) < N//3)
+
+w = cp.where((kz == 0) | (kz == N//2), 1.0, 2.0)[None, None, :]
+k2_forced = cp.where((k2 > 0) & (k2 < K_FORCE**2), k2, 0.0)
+
+
+def project(a):
+    p = (k[0]*a[0] + k[1]*a[1] + k[2]*a[2])*inv_k2
     for i in range(3):
-        u_hat[i] -= H.k[i]*pk
-    u_hat *= H.dealias
-    del pk
+        a[i] -= k[i]*p
 
-eta = eta_delta_target*H.delta
-eps_target = nu**3/eta**4
-k2_forced = cp.where((H.k2 > 0) & (H.k2 < k_force**2), H.k2, 0.0)
-nu_f = 0.0
 
-def update_forcing():
-    global nu_f
-    e = 0.5*cp.sum(cp.abs(u_hat)**2, axis=0)*H.w
-    Om_forced = float(cp.sum(e*k2_forced))
-    nu_f = eps_target/(2*Om_forced) if Om_forced > 0 else 0.0
+def curl(i, j):
+    c = k[i]*u_hat[j]
+    c -= k[j]*u_hat[i]
+    c *= dealias
+    c *= 1j
+    return bwd(c)
 
-A = (0.0, -5/9, -153/128)
-B = (1/3, 15/16, 8/15)
 
-dt_visc = 1/(nu*3*H.kmax**2)
-t, step, isnap = 0.0, 0, 0
-t_save = [(i + 1)*t_space*te0 for i in range(n_snap)]
+def nonlinear():
+    ud = cp.stack([bwd(u_hat[i]*dealias) for i in range(3)])
+    nl = cp.zeros_like(ud)
+    om = curl(1, 2)
+    nl[1] += ud[2]*om
+    nl[2] -= ud[1]*om
+    om = curl(2, 0)
+    nl[0] -= ud[2]*om
+    nl[2] += ud[0]*om
+    om = curl(0, 1)
+    nl[0] += ud[1]*om
+    nl[1] -= ud[0]*om
+    del om, ud
+    r = cp.stack([fwd(nl[i]) for i in range(3)])
+    del nl
+    r *= dealias
+    project(r)
+    return r
+
+
+def energy():
+    return 0.5*cp.sum(cp.abs(u_hat)**2, axis=0)*w
+
+
+def save(name):
+    e = energy()
+    K, Om, Lk = float(cp.sum(e)), float(cp.sum(e*k2)), float(cp.sum(e*cp.sqrt(inv_k2)))
+    urms = np.sqrt(2*K/3)
+    lamb = np.sqrt(15*urms**2/(2*Om))
+    eta = (nu**3/(2*nu*Om))**0.25
+    L11 = 3*np.pi/4*Lk/K
+    u = cp.stack([bwd(u_hat[i]) for i in range(3)])
+    umax = float(cp.sqrt(cp.max(u[0]**2 + u[1]**2 + u[2]**2)))
+    with h5py.File(name + ".tmp", "w") as f:
+        g = f.create_group("VTKHDF")
+        g.attrs["Version"] = np.array([1, 0], np.int32)
+        g.attrs.create("Type", np.bytes_("ImageData"))
+        g.attrs["WholeExtent"] = np.array([0, N - 1, 0, N - 1, 0, N - 1], np.int64)
+        g.attrs["Origin"] = np.zeros(3)
+        g.attrs["Spacing"] = np.full(3, delta)
+        g.attrs["Direction"] = np.eye(3).ravel()
+        p = g.create_group("PointData")
+        put = lambda c, a: p.create_dataset(c, data=cp.ascontiguousarray(a.T).get())
+        for i, c in enumerate(("ux", "uy", "uz")):
+            put(c, u[i])
+        del u
+        ud = cp.stack([bwd(u_hat[i]*dealias) for i in range(3)])
+        ph = cp.zeros_like(u_hat[0])
+        for i in range(3):
+            for j in range(3):
+                ph -= k[i]*k[j]*fwd(ud[i]*ud[j])
+        del ud
+        put("drho", 3*bwd(ph*inv_k2))
+        del ph
+        for c, (i, j) in {"sxx": (0, 0), "syy": (1, 1), "szz": (2, 2), "sxy": (0, 1), "sxz": (0, 2), "syz": (1, 2)}.items():
+            put(c, bwd(0.5j*(k[j]*u_hat[i] + k[i]*u_hat[j])))
+    os.rename(name + ".tmp", name)
+    print(f"SNAPSHOT {name} t/te={t/TE:.2f} ReL={urms*lamb/nu:.1f} eta/delta={eta/delta:.3f} urms={urms:.6f} "
+          f"L11={L11:.3f} te={L11/urms:.2f} Ma_rms={np.sqrt(3)*urms:.4f} Ma_max={np.sqrt(3)*umax:.4f}", flush=True)
+
+
+rng = cp.random.default_rng()
+u_hat = cp.stack([fwd(rng.standard_normal((N, N, N)))*cp.exp(-k2/K_FORCE**2) for _ in range(3)])
+project(u_hat)
+u_hat *= (2*eps)**(1/3)/np.sqrt(2*float(cp.sum(energy()))/3)
+
+t_save = TE*(T_SPINUP + T_SPACE*np.arange(N_REAL))
+t, step, i = 0.0, 0, 0
 residual = cp.zeros_like(u_hat)
-d = H.diagnostics(u_hat)
-print(f"fonte={source} t0={t0:.4f} te0={te0:.4f} nu={nu:.6e} eps_alvo={eps_target:.4e} "
-      f"perturbacao={perturbation:g} colheitas em t/te0 = {[round((t0 + x)/te0, 2) for x in t_save]}", flush=True)
+print(f"nu={nu:.6e} eps={eps:.4e} tau={TAU} colheitas em t/te = {t_save/TE}", flush=True)
 
-while True:
-
-    if t >= t_save[isnap] - 1e-12:
-        residual = None
-        d, lbm = H.harvest(f"initial_{first + isnap}.vtkhdf", u_hat,
-                           dict(keep, t=t0 + t, source=source, perturbation=perturbation))
-        print(f"SNAPSHOT initial_{first + isnap}.vtkhdf t/te0={(t0 + t)/te0:.2f} ReL={d['ReL']:.1f} "
-              f"eta/delta={d['eta_delta']:.3f} urms={d['urms']:.6f} te={d['te']:.2f} tau={lbm['tau']:.6f}", flush=True)
-        isnap += 1
-        if isnap == n_snap:
-            break
-        residual = cp.zeros_like(u_hat)
-
+while i < N_REAL:
     if step % 5 == 0:
-        dt = min(H.compute_dt(u_hat, cfl), dt_visc)
+        umax = max(float(cp.max(cp.abs(bwd(u_hat[j])))) for j in range(3))
+        dt = min(CFL*delta/umax, 1/(3*nu*(N/3)**2))
         if not np.isfinite(dt):
             sys.exit(f"NaN/inf em step={step} t={t:.6f}")
-        update_forcing()
-        d = H.diagnostics(u_hat)
+        nu_f = eps/(2*float(cp.sum(energy()*k2_forced)))
 
-    dt_step = max(min(dt, t_save[isnap] - t), 1e-12)
-
-    for a, b in zip(A, B):
-        r = H.nonlinear_hat(u_hat)
-        for i in range(3):
-            r[i] += (nu_f*k2_forced - nu*H.k2)*u_hat[i]
-            residual[i] *= a
-            residual[i] += dt_step*r[i]
-            u_hat[i] += b*residual[i]
-        del r
-
+    dt_step = max(min(dt, t_save[i] - t), 1e-12)
+    for a, b in zip((0.0, -5/9, -153/128), (1/3, 15/16, 8/15)):
+        r = nonlinear()
+        L = nu_f*k2_forced - nu*k2
+        for j in range(3):
+            r[j] += L*u_hat[j]
+            residual[j] *= a
+            residual[j] += dt_step*r[j]
+            u_hat[j] += b*residual[j]
+        del r, L
     t += dt_step
     step += 1
 
     if step % 100 == 0:
-        print(f"step={step} t/te0={(t0 + t)/te0:.2f} ReL={d['ReL']:.1f} eta/delta={d['eta_delta']:.3f} "
-              f"urms={d['urms']:.6f} L11={d['L11']:.3f} nu_f/nu={nu_f/nu:.2f} dt={dt:.3e}", flush=True)
+        print(f"step={step} t/te={t/TE:.2f} nu_f/nu={nu_f/nu:.2f} dt={dt:.3e}", flush=True)
+
+    if t >= t_save[i] - 1e-12:
+        residual = None
+        save(f"initial_{i}.vtkhdf")
+        residual = cp.zeros_like(u_hat)
+        i += 1

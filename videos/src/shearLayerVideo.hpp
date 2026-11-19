@@ -5,6 +5,7 @@
 // so com Q-criterion e omega_x numa faixa central em y (o resto do dominio nao tem vorticidade).
 
 #include <cmath>
+#include <numbers>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -25,19 +26,15 @@ constexpr int Y0 {(NY - NYC) / 2};
 constexpr double U_SCALE {1};
 
 
-inline double attribute(const char* name)
-{
-    double v;
-    hid_t file = H5Fopen("initial.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
-    hid_t attr = H5Aopen(file, name, H5P_DEFAULT);
-    H5Aread(attr, H5T_NATIVE_DOUBLE, &v);
-    H5Aclose(attr);
-    H5Fclose(file);
-    return v;
-}
+// os mesmos parametros de videos/initial.py
+constexpr int LX {NX / 2};             // lambda_x
+constexpr double U {0.05};
+constexpr double RE {1000};
+constexpr double DELTA_W {LX / (1.16 * 2 * std::numbers::pi)};
+constexpr double NU {U * DELTA_W / RE};
 
-const dfloat TAU {static_cast<dfloat>(attribute("tau"))};
-const double T_REF {attribute("delta_w") / attribute("U")};
+constexpr dfloat TAU {static_cast<dfloat>(0.5 + 3 * NU)};
+constexpr double T_REF {DELTA_W / U};
 const double DT_OUT {T_REF / 4};
 const int N_STEPS {static_cast<int>(std::ceil(26 * T_REF))};
 
@@ -78,12 +75,6 @@ inline void boundary(dfloat* moments)
 
 inline void initialize(dfloat* moments, dim3 grid, dim3 block)
 {
-    if (attribute("NX") != NX || attribute("NY") != NY || attribute("NZ") != NZ)
-    {
-        std::printf("initial.h5 nao corresponde a NX, NY, NZ\n");
-        std::exit(EXIT_FAILURE);
-    }
-
     const char* names[10] = {"drho", "ux", "uy", "uz", "sxx", "sxy", "sxz", "syy", "syz", "szz"};
     const size_t n = static_cast<size_t>(NX) * NY * NZ;
     const hid_t type = std::is_same_v<dfloat, float> ? H5T_NATIVE_FLOAT : H5T_NATIVE_DOUBLE;
@@ -94,6 +85,15 @@ inline void initialize(dfloat* moments, dim3 grid, dim3 block)
     for (int c = 0; c < 10; ++c)
     {
         hid_t dset = H5Dopen(file, names[c], H5P_DEFAULT);
+        hid_t space = H5Dget_space(dset);
+        hsize_t dims[3] = {0, 0, 0};
+        H5Sget_simple_extent_dims(space, dims, nullptr);
+        H5Sclose(space);
+        if (dims[0] != hsize_t(NX) || dims[1] != hsize_t(NY) || dims[2] != hsize_t(NZ))
+        {
+            std::printf("initial.h5/%s nao tem shape [NX, NY, NZ] = [%d, %d, %d]\n", names[c], NX, NY, NZ);
+            std::exit(EXIT_FAILURE);
+        }
         H5Dread(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, h.data());
         H5Dclose(dset);
         cuda_CHECK(cudaMalloc(&f.p[c], n * sizeof(dfloat)));
@@ -169,7 +169,7 @@ inline void output(const dfloat* moments, int iout, double)
     static float* d = nullptr;
     if (!d) cuda_CHECK(cudaMalloc(&d, 2 * n * sizeof(float)));
 
-    const double s = attribute("delta_w") / attribute("U");
+    const double s = T_REF;
     criteria<<<dim3(NX / 64, NYC, NZ), 64>>>(moments, d, d + n, static_cast<float>(s * s), static_cast<float>(s));
     std::vector<float> h(2 * n);
     cuda_CHECK(cudaMemcpy(h.data(), d, 2 * n * sizeof(float), cudaMemcpyDeviceToHost));

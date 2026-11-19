@@ -5,7 +5,7 @@
    - Lz = 3 lambda_z: tres pares de ribs ao longo do rolo, em vez de um;
    - modos espanwise extras (kz = 1..6 vezes o fundamental do dominio) com fases aleatorias e
      amplitude pequena: os ribs deixam de ser identicos, como numa onda real.
-   Grava initial.h5 no formato lido por shearLayerVideo.hpp.
+   Grava initial.h5 (so os 10 campos) no formato lido por shearLayerVideo.hpp, que tem os mesmos parametros no codigo.
    Uso: .venv/bin/python initial.py
 """
 
@@ -81,7 +81,5 @@ fields = {"drho": 0*u, "ux": u, "uy": v, "uz": w,
 with h5py.File("initial.h5", "w") as out:
     for name, q in fields.items():
         out.create_dataset(name, data=np.asarray(q, dtype=np.float32))
-    for name, val in dict(NX=NX, NY=NY, NZ=NZ, U=U, Re=RE, delta_w=DW, tau=0.5 + 3*nu).items():
-        out.attrs[name] = val
 
 print(f"delta_w = {DW:.3f}, tau = {0.5 + 3*nu:.5f}")

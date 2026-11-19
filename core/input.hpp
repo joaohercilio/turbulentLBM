@@ -2,42 +2,11 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <type_traits>
 #include <hdf5.h>
 
 #include "definitions.hpp"
-
-
-/*
-    Leitura de condicoes iniciais:
-      initial.vtkhdf (ImageData) so com os 10 campos, em VTKHDF/PointData/<nome>, shape [NZ, NY, NX],
-      x varia mais rapido: no (x, y, z) -> indice (z * NY + y) * NX + x;
-      initial.txt com os parametros, uma linha "nome valor" por parametro (# inicia comentario).
-*/
-
-
-inline double readParameter(const char* name, const char* path = "initial.txt")
-{
-    std::ifstream file(path);
-    if (!file)
-    {
-        std::printf("nao foi possivel abrir %s\n", path);
-        std::exit(EXIT_FAILURE);
-    }
-    std::string line;
-    while (std::getline(file, line))
-    {
-        std::istringstream in(line.substr(0, line.find('#')));
-        std::string key;
-        double v;
-        if (in >> key && key == name && in >> v) return v;
-    }
-    std::printf("parametro %s nao encontrado em %s\n", name, path);
-    std::exit(EXIT_FAILURE);
-}
 
 
 inline void readPointData(hid_t file, const char* name, dfloat* data, const int NX, const int NY, const int NZ)
